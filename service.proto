@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package proto;
+option go_package = "./pb";
+
+service PressureMonitor {
+  rpc SetPressure(SetMessage) returns (Empty);
+  rpc GetPressureStream(SetId) returns (stream UpdateMessage);
+  rpc HangUp(SetId) returns (Empty);
+}
+
+message UpdateMessage {
+  string id = 1;
+  bool  lastMessage = 2;
+  float currentPressure = 3;
+  float nominalPressure = 4;
+}
+
+message SetId {
+  string id = 1;
+}
+
+message SetMessage {
+  float nominalPressure = 1;
+}
+
+message Empty {}
