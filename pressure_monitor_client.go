@@ -57,7 +57,8 @@ func sendData(mess string, client Client) {
 //	}
 //}
 
-func setPressure(client Client, group sync.WaitGroup) {
+func setPressure(client Client, group *sync.WaitGroup) {
+	defer group.Done()
 	fmt.Println("Usage: '+' for increment, '-' for decrement, 'q' for quit")
 	var message = ""
 	var input []byte = make([]byte, 1)
@@ -82,7 +83,7 @@ func setPressure(client Client, group sync.WaitGroup) {
 		sendData(message, client)
 		//client.inputQueue = append(client.inputQueue, message)
 	}
-	group.Done()
+	fmt.Println("setPressure out")
 }
 
 //func setPressure2(client Client) {
@@ -90,24 +91,35 @@ func setPressure(client Client, group sync.WaitGroup) {
 //	client.connection.SetPressure(context.Background(), &SetMessage{NominalPressure: 10})
 //}
 
-func listenStream(client Client, group sync.WaitGroup) {
+func listenStream(client Client, group *sync.WaitGroup, q *bool) {
+	defer group.Done()
 	responseStream, err := client.connection.GetPressureStream(context.Background(), &SetId{Id: client.id.String()})
 	if err != nil {
 		log.Fatalf("could not greet: %v", err)
 	}
 	for {
+		var _, ok = <-q
+		if !ok {
+		}
 		response, err := responseStream.Recv()
+
+		if response.LastMessage == true {
+			break
+		}
 		if err != nil {
 			if err == io.EOF {
-				//log.Debug("client hang up")
+					//log.Debug("client hang up")
 				break
 			}
 			//log.Warning("event receive error occured %v", err)
 			break
+			}
+			fmt.Println("Received from async generator: ", response.NominalPressure, response.CurrentPressure)
 		}
-		fmt.Println("Received from async generator: ", response.NominalPressure, response.CurrentPressure)
+
 	}
-	group.Done()
+	fmt.Println("listenStream out")
+
 }
 
 func main() {
@@ -117,9 +129,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}
-	var wg = sync.WaitGroup{}
-	wg.Add(1)
+	quit := make(chan bool)
+	var wg sync.WaitGroup
 	var client = Client{cancelToken: false, recQueue: []string{}, inputQueue: []string{}, isTerminationMess: false, id: uuid.New(), connection: NewPressureMonitorClient(conn)}
-	go setPressure(client, wg)
-	go listenStream(client, wg)
+	wg.Add(1)
+	go setPressure(client, &wg, &quit)
+	wg.Add(1)
+	go listenStream(client, &wg, &quit)
+	wg.Wait()
 }
