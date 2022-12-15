@@ -21,13 +21,10 @@ const (
 )
 
 type Client struct {
-	hangUpStart       time.Time
-	cancelToken       bool
-	recQueue          []string
-	inputQueue        []string
-	isTerminationMess bool
-	id                uuid.UUID
-	connection        PressureMonitorClient
+	hangUpStart time.Time
+	cancelToken bool
+	id          uuid.UUID
+	connection  PressureMonitorClient
 }
 
 var (
@@ -35,7 +32,13 @@ var (
 	name = flag.String("name", defaultName, "Name to greet")
 )
 
-func sendData(mess string, client Client) {
+var (
+	WarningLogger *log.Logger
+	InfoLogger    *log.Logger
+	ErrorLogger   *log.Logger
+)
+
+func sendData(mess string, client *Client) {
 	if mess == "END" {
 		client.connection.HangUp(context.Background(), &SetId{Id: client.id.String()})
 	}
@@ -44,28 +47,13 @@ func sendData(mess string, client Client) {
 	client.connection.SetPressure(context.Background(), &SetMessage{NominalPressure: num})
 }
 
-//func run(client Client) {
-//	var input_message = ""
-//	var response_message = ""
-//
-//	for true {
-//		if client.cancelToken == false {
-//			if len(client.inputQueue) > 0 {
-//				input_message = client.inputQueue[0]
-//			}
-//		}
-//	}
-//}
-
-func setPressure(client Client, group *sync.WaitGroup) {
+func setPressure(client *Client, group *sync.WaitGroup, q *chan struct{}) {
 	defer group.Done()
 	fmt.Println("Usage: '+' for increment, '-' for decrement, 'q' for quit")
 	var message = ""
 	var input []byte = make([]byte, 1)
 	for client.hangUpStart.IsZero() && client.cancelToken == false {
 
-		//reader := bufio.NewReader(os.Stdin)
-		//input, err := reader.ReadString('\n')
 		os.Stdin.Read(input)
 		if string(input) == "+" {
 			message = "10"
@@ -74,6 +62,7 @@ func setPressure(client Client, group *sync.WaitGroup) {
 		} else if string(input) == "q" {
 			message = "END"
 			client.hangUpStart = time.Now()
+
 		} else {
 			if !client.cancelToken {
 				log.Println("+, - or q only!!!")
@@ -81,60 +70,69 @@ func setPressure(client Client, group *sync.WaitGroup) {
 			continue
 		}
 		sendData(message, client)
-		//client.inputQueue = append(client.inputQueue, message)
 	}
-	fmt.Println("setPressure out")
+	InfoLogger.Println("setPressure ends")
 }
 
-//func setPressure2(client Client) {
-//	log.Println("cislo: ", 10)
-//	client.connection.SetPressure(context.Background(), &SetMessage{NominalPressure: 10})
-//}
+func initLog() {
+	file, err := os.OpenFile("logs.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		ErrorLogger.Println("error occured: %v", err)
+		log.Fatal(err)
+	}
 
-func listenStream(client Client, group *sync.WaitGroup, q *bool) {
+	InfoLogger = log.New(file, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+	WarningLogger = log.New(file, "WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
+	ErrorLogger = log.New(file, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+}
+
+func listenStream(client *Client, group *sync.WaitGroup, q *chan struct{}) {
 	defer group.Done()
 	responseStream, err := client.connection.GetPressureStream(context.Background(), &SetId{Id: client.id.String()})
 	if err != nil {
-		log.Fatalf("could not greet: %v", err)
+		ErrorLogger.Println("could not greet: %v", err)
 	}
 	for {
-		var _, ok = <-q
-		if !ok {
-		}
 		response, err := responseStream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				WarningLogger.Println("client hang up")
+				log.Println("client hang up")
+			} else {
+
+			}
+			WarningLogger.Println("event receive errror occured ", err)
+			break
+		}
 
 		if response.LastMessage == true {
 			break
 		}
-		if err != nil {
-			if err == io.EOF {
-					//log.Debug("client hang up")
-				break
-			}
-			//log.Warning("event receive error occured %v", err)
-			break
-			}
-			fmt.Println("Received from async generator: ", response.NominalPressure, response.CurrentPressure)
-		}
-
+		InfoLogger.Println("Received from async generator: ", response.NominalPressure, response.CurrentPressure)
+		fmt.Println("Received from async generator: ", response.NominalPressure, response.CurrentPressure)
 	}
-	fmt.Println("listenStream out")
-
+	client.cancelToken = true
+	InfoLogger.Println("listenStream ends")
 }
 
 func main() {
+	initLog()
+	InfoLogger.Println("---------------------------START OF PROGRAM-----------------------------")
 	flag.Parse()
 	// Set up a connection to the server.
 	conn, err := grpc.Dial(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("did not connect: %v", err)
+		ErrorLogger.Println("did not connect: %v", err)
+		log.Fatalf("did not connect: ", err)
 	}
-	quit := make(chan bool)
+	quit := make(chan struct{})
 	var wg sync.WaitGroup
-	var client = Client{cancelToken: false, recQueue: []string{}, inputQueue: []string{}, isTerminationMess: false, id: uuid.New(), connection: NewPressureMonitorClient(conn)}
+	var client = Client{cancelToken: false, id: uuid.New(), connection: NewPressureMonitorClient(conn)}
 	wg.Add(1)
-	go setPressure(client, &wg, &quit)
+	go setPressure(&client, &wg, &quit)
 	wg.Add(1)
-	go listenStream(client, &wg, &quit)
+	go listenStream(&client, &wg, &quit)
+
 	wg.Wait()
+	InfoLogger.Println("-----------------------------END OF PROGRAM------------------------------")
 }
